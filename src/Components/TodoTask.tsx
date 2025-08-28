@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+// src/Components/TodoTask.tsx
+import React, { useState, useEffect } from "react";
 import { ITask } from "../Interfaces";
 import {
   Card,
@@ -9,6 +10,10 @@ import {
   Stack,
   IconButton,
   Button,
+  MenuItem,
+  Select,
+  FormControl,
+  InputLabel,
 } from "@mui/material";
 import {
   CheckCircle,
@@ -22,25 +27,29 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
 
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import dayjs, { Dayjs } from "dayjs";
+import relativeTime from "dayjs/plugin/relativeTime";
+
+dayjs.extend(relativeTime);
+
 interface Props {
   task: ITask;
-  toggleTaskCompletion: (id: string) => void;
-  editTask: (id: string, newName: string, newDeadline: number) => void;
-  deleteTask: (id: string) => void;
+  updateTask: (task: ITask) => void;
 }
 
-const TodoTask: React.FC<Props> = ({
-  task,
-  toggleTaskCompletion,
-  editTask,
-  deleteTask,
-}) => {
+const TodoTask: React.FC<Props> = ({ task, updateTask }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [newName, setNewName] = useState(task.taskName);
-  const [newDeadline, setNewDeadline] = useState(task.deadline);
-  const [error, setError] = useState("");
+  const [newDeadline, setNewDeadline] = useState<Dayjs | null>(
+    task.deadline ? dayjs(task.deadline) : null
+  );
+  const [newType, setNewType] = useState<ITask["taskType"]>(task.taskType);
+  const [nameError, setNameError] = useState("");
+  const [deadlineError, setDeadlineError] = useState("");
 
-  // DnD setup
   const {
     attributes,
     listeners,
@@ -53,22 +62,78 @@ const TodoTask: React.FC<Props> = ({
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isDragging ? 0.6 : 1,
   };
 
+  // 🔹 Priority calculator
+  const calculatePriority = (deadline: Dayjs | null): ITask["priority"] => {
+    if (!deadline) return "Low";
+    const diff = deadline.diff(dayjs(), "day");
+    if (diff < 1) return "Urgent";
+    if (diff <= 3) return "High";
+    if (diff <= 7) return "Medium";
+    return "Low";
+  };
+
+  // 🔹 Handle Save when editing
   const handleSave = () => {
+    let valid = true;
+
     if (!newName.trim()) {
-      setError("Task name cannot be empty");
-      return;
-    }
-    if (newDeadline <= 0) {
-      setError("Deadline must be greater than 0");
-      return;
-    }
-    setError("");
-    editTask(task.id, newName, newDeadline);
+      setNameError("Task name cannot be empty");
+      valid = false;
+    } else setNameError("");
+
+    if (newDeadline && newDeadline.isBefore(dayjs().startOf("day"))) {
+      setDeadlineError("Deadline cannot be in the past");
+      valid = false;
+    } else setDeadlineError("");
+
+    if (!valid) return;
+
+    updateTask({
+      ...task,
+      taskName: newName.trim(),
+      taskType: newType,
+      deadline: newDeadline ? newDeadline.format("YYYY-MM-DD") : "",
+      priority: calculatePriority(newDeadline),
+    });
     setIsEditing(false);
   };
+
+  // --- 🔹 Auto Update Priority as time passes ---
+  useEffect(() => {
+    if (!task.deadline || task.completed) return;
+
+    const interval = setInterval(() => {
+      const deadline = dayjs(task.deadline);
+      const newPriority = calculatePriority(deadline);
+
+      if (newPriority !== task.priority) {
+        updateTask({ ...task, priority: newPriority });
+      }
+    }, 60 * 1000); // check every 1 min
+
+    return () => clearInterval(interval);
+  }, [task, updateTask]);
+
+  // --- Deadline Text ---
+  const getDeadlineText = () => {
+    if (!task.deadline) return "No deadline";
+
+    const deadline = dayjs(task.deadline);
+    if (task.completed) return `Completed (was due ${deadline.fromNow()})`;
+    if (deadline.isBefore(dayjs(), "day"))
+      return `Overdue (${deadline.fromNow()})`;
+    if (deadline.isSame(dayjs(), "day")) return "Due Today";
+
+    return `Due ${deadline.fromNow()}`;
+  };
+
+  const isOverdue =
+    task.deadline && !task.completed
+      ? dayjs(task.deadline).isBefore(dayjs(), "day")
+      : false;
 
   return (
     <Card
@@ -78,30 +143,62 @@ const TodoTask: React.FC<Props> = ({
         mb: 2,
         borderRadius: 3,
         boxShadow: isDragging ? 6 : 2,
-        backgroundColor: task.completed ? "rgba(76, 175, 80, 0.08)" : "#fff",
+        backgroundColor: task.completed
+          ? "rgba(76, 175, 80, 0.1)"
+          : isOverdue
+          ? "rgba(244, 67, 54, 0.1)"
+          : "#fff",
+        border: isOverdue ? "1px solid red" : "1px solid transparent",
         transition: "0.2s",
       }}
     >
       <CardContent sx={{ p: 2 }}>
         {isEditing ? (
           <Stack spacing={2}>
+            {/* Task Name */}
             <TextField
               label="Task Name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               fullWidth
-              error={!!error && !newName.trim()}
-              helperText={!newName.trim() ? error : ""}
+              error={!!nameError}
+              helperText={nameError}
             />
-            <TextField
-              label="Deadline (days)"
-              type="number"
-              value={newDeadline}
-              onChange={(e) => setNewDeadline(Number(e.target.value))}
-              fullWidth
-              error={!!error && newDeadline <= 0}
-              helperText={newDeadline <= 0 ? error : ""}
-            />
+
+            {/* Task Type */}
+            <FormControl fullWidth>
+              <InputLabel>Type</InputLabel>
+              <Select
+                value={newType}
+                onChange={(e) =>
+                  setNewType(e.target.value as ITask["taskType"])
+                }
+              >
+                <MenuItem value="Work">Work</MenuItem>
+                <MenuItem value="Assignment">Assignment</MenuItem>
+                <MenuItem value="Personal">Personal</MenuItem>
+                <MenuItem value="Other">Other</MenuItem>
+              </Select>
+            </FormControl>
+
+            {/* Deadline */}
+            <LocalizationProvider dateAdapter={AdapterDayjs}>
+              <DatePicker
+                label="Deadline"
+                value={newDeadline}
+                minDate={dayjs().startOf("day")}
+                onChange={(newValue) => setNewDeadline(newValue)}
+                slotProps={{
+                  textField: {
+                    fullWidth: true,
+                    error: !!deadlineError,
+                    helperText: deadlineError,
+                  },
+                }}
+              />
+            </LocalizationProvider>
+
+            {/* Action Buttons */}
             <Stack direction="row" justifyContent="flex-end" spacing={1}>
               <Button
                 variant="contained"
@@ -130,11 +227,11 @@ const TodoTask: React.FC<Props> = ({
             gap={2}
             flexWrap="wrap"
           >
-            {/* Left: Drag + task info */}
+            {/* Drag Handle + Task Info */}
             <Box
               display="flex"
               alignItems="center"
-              gap={1}
+              gap={1.5}
               flex={1}
               minWidth={0}
             >
@@ -159,26 +256,51 @@ const TodoTask: React.FC<Props> = ({
                 </Typography>
                 <Typography
                   variant="body2"
-                  color="text.secondary"
-                  sx={{ fontSize: "0.8rem" }}
+                  sx={{
+                    fontSize: "0.8rem",
+                    color: isOverdue ? "error.main" : "text.secondary",
+                  }}
                 >
-                  {task.deadline} days
+                  Type: {task.taskType} • {getDeadlineText()}
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontWeight: "bold",
+                    color:
+                      task.priority === "Urgent"
+                        ? "error.main"
+                        : task.priority === "High"
+                        ? "warning.main"
+                        : task.priority === "Medium"
+                        ? "info.main"
+                        : "text.secondary",
+                  }}
+                >
+                  Priority: {task.priority}
                 </Typography>
               </Box>
             </Box>
 
-            {/* Right: actions (icons) */}
+            {/* Actions */}
             <Stack direction="row" spacing={1} flexShrink={0}>
               <IconButton
                 color={task.completed ? "warning" : "success"}
-                onClick={() => toggleTaskCompletion(task.id)}
+                onClick={() =>
+                  updateTask({ ...task, completed: !task.completed })
+                }
               >
                 {task.completed ? <Undo /> : <CheckCircle />}
               </IconButton>
+
               <IconButton color="primary" onClick={() => setIsEditing(true)}>
                 <Edit />
               </IconButton>
-              <IconButton color="error" onClick={() => deleteTask(task.id)}>
+
+              <IconButton
+                color="error"
+                onClick={() => updateTask({ ...task, isDeleted: true })}
+              >
                 <Delete />
               </IconButton>
             </Stack>

@@ -1,6 +1,10 @@
+// src/Interfaces.ts
 export interface ITask {
-    taskName :  string;
-    deadline : number;
-    completed : boolean;
-    id: string;
+  id: string;
+  taskName: string;
+  taskType: "Work" | "Assignment" | "Personal" | "Other";
+  deadline: string; 
+  priority: "Urgent" | "High" | "Medium" | "Low";
+  completed: boolean;
+  isDeleted: boolean;
 }

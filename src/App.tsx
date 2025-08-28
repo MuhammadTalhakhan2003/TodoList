@@ -1,360 +1,345 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useState, useEffect } from "react";
+import { ITask } from "./Interfaces";
+import RecycleBin from "./Components/RecycleBin";
+import ProgressBar from "./Components/ProgressBar";
+import AddTaskForm from "./Components/AddTaskForm";
+import TodoTask from "./Components/TodoTask";
+
 import {
   Box,
-  Button,
-  Container,
-  Grid,
-  TextField,
+  Stack,
   Typography,
   Paper,
-  Stack,
+  Divider,
+  Chip,
+  Card,
   IconButton,
-  CssBaseline,
-  LinearProgress,
 } from "@mui/material";
-import { DndContext, closestCenter } from "@dnd-kit/core";
+import { Brightness4, Brightness7 } from "@mui/icons-material";
+import { ThemeProvider, CssBaseline, useTheme } from "@mui/material";
+import { lightTheme, darkTheme } from "./Components/theme";
+
+import { v4 as uuidv4 } from "uuid";
+import Cookies from "js-cookie";
+
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragOverlay,
+} from "@dnd-kit/core";
 import {
   SortableContext,
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import Cookies from "js-cookie";
-import { ITask } from "./Interfaces";
-import TodoTask from "./Components/TodoTask";
-import { Brightness4, Brightness7 } from "@mui/icons-material";
-import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { AnimatePresence, motion } from "framer-motion";
 
 const App: React.FC = () => {
-  const [task, setTask] = useState<string>("");
-  const [deadline, setDeadline] = useState<number>(0);
-  const [todoList, setTodoList] = useState<ITask[]>([]);
-  const [mode, setMode] = useState<"light" | "dark">(
-    (localStorage.getItem("theme") as "light" | "dark") || "light"
+  const [tasks, setTasks] = useState<ITask[]>([]);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [activeTask, setActiveTask] = useState<ITask | null>(null);
+  const [darkMode, setDarkMode] = useState(false);
+
+  // 🔍 Search + Filter states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterType, setFilterType] = useState<ITask["taskType"] | "All">(
+    "All"
   );
 
-  // ✅ NEW STATES for search + filter
-  const [search, setSearch] = useState<string>("");
-  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">(
-    "all"
-  );
+  const sensors = useSensors(useSensor(PointerSensor));
+  const theme = useTheme();
 
-  const theme = useMemo(
-    () =>
-      createTheme({
-        palette: {
-          mode,
-          primary: { main: mode === "light" ? "#1976d2" : "#008cffff" },
-          background: {
-            default: mode === "light" ? "#f5f5f5" : "#121212",
-            paper: mode === "light" ? "#ffffff" : "#ffffff20",
-          },
-          text: {
-            primary: mode === "light" ? "#000000" : "#838383ff",
-            secondary: mode === "light" ? "#333" : "#838383ff",
-          },
-        },
-      }),
-    [mode]
-  );
-
-  // Save theme to localStorage
-  useEffect(() => {
-    localStorage.setItem("theme", mode);
-  }, [mode]);
-
-  // Load tasks from cookies
+  // ✅ Load from cookies on first render
   useEffect(() => {
     const savedTasks = Cookies.get("tasks");
+    const savedTheme = Cookies.get("darkMode");
+
     if (savedTasks) {
-      setTodoList(JSON.parse(savedTasks));
+      try {
+        setTasks(JSON.parse(savedTasks));
+      } catch (err) {
+        console.error("Error parsing tasks cookie", err);
+      }
+    }
+    if (savedTheme) {
+      setDarkMode(savedTheme === "true");
     }
   }, []);
 
-  // Save tasks before unload
+  // ✅ Save to cookies whenever tasks change
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      Cookies.set("tasks", JSON.stringify(todoList), { expires: 7 });
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [todoList]);
+    Cookies.set("tasks", JSON.stringify(tasks), { expires: 7 }); // expires in 7 days
+  }, [tasks]);
 
-  // Add new task
-  const addTask = () => {
-    if (!task.trim() || deadline <= 0) return;
-    const newTask: ITask = {
-      id: Date.now().toString(),
-      taskName: task,
-      deadline,
-      completed: false,
-    };
-    setTodoList([...todoList, newTask]);
-    setTask("");
-    setDeadline(0);
-  };
+  // ✅ Save darkMode preference
+  useEffect(() => {
+    Cookies.set("darkMode", String(darkMode), { expires: 7 });
+  }, [darkMode]);
 
-  // Toggle complete
-  const toggleTaskCompletion = (id: string) => {
-    setTodoList((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
-    );
-  };
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
-  // Edit task
-  const editTask = (id: string, newName: string, newDeadline: number) => {
-    setTodoList((prev) =>
-      prev.map((t) =>
-        t.id === id ? { ...t, taskName: newName, deadline: newDeadline } : t
-      )
-    );
-  };
-
-  // Delete task
-  const deleteTask = (id: string) => {
-    const taskToDelete = todoList.find((t) => t.id === id);
-    if (taskToDelete && window.confirm(`Delete "${taskToDelete.taskName}"?`)) {
-      setTodoList((prev) => prev.filter((t) => t.id !== id));
-    }
-  };
-
-  // Drag handler
-  const handleDragEnd = (event: any) => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-
-    const incompleteTasks = todoList.filter((t) => !t.completed);
-    const completeTasks = todoList.filter((t) => t.completed);
-
-    if (incompleteTasks.some((t) => t.id === active.id)) {
-      const oldIndex = incompleteTasks.findIndex((t) => t.id === active.id);
-      const newIndex = incompleteTasks.findIndex((t) => t.id === over.id);
-      const reordered = arrayMove(incompleteTasks, oldIndex, newIndex);
-      setTodoList([...reordered, ...completeTasks]);
-    } else {
-      const oldIndex = completeTasks.findIndex((t) => t.id === active.id);
-      const newIndex = completeTasks.findIndex((t) => t.id === over.id);
-      const reordered = arrayMove(completeTasks, oldIndex, newIndex);
-      setTodoList([...incompleteTasks, ...reordered]);
-    }
+  const updateTask = (task: Partial<ITask> & { permanentDelete?: boolean }) => {
+    setTasks((prev) => {
+      if (task.permanentDelete && task.id) {
+        return prev.filter((t) => t.id !== task.id);
+      }
+      if (task.id) {
+        return prev.map((t) => (t.id === task.id ? { ...t, ...task } : t));
+      } else {
+        const newTask: ITask = {
+          id: uuidv4(),
+          taskName: task.taskName || "Untitled Task",
+          taskType: task.taskType || "Other",
+          deadline: task.deadline || "",
+          priority: task.priority || "Low",
+          completed: false,
+          isDeleted: false,
+        };
+        return [...prev, newTask];
+      }
+    });
   };
 
   // ✅ Apply Search + Filter
-  const filteredTasks = todoList.filter((t) => {
+  const activeTasks = tasks.filter((t) => !t.isDeleted);
+  const filteredTasks = activeTasks.filter((t) => {
     const matchesSearch = t.taskName
       .toLowerCase()
-      .includes(search.toLowerCase());
-    if (filter === "all") return matchesSearch;
-    if (filter === "completed") return t.completed && matchesSearch;
-    if (filter === "incomplete") return !t.completed && matchesSearch;
-    return true;
+      .includes(searchQuery.toLowerCase());
+    const matchesFilter = filterType === "All" || t.taskType === filterType;
+    return matchesSearch && matchesFilter;
   });
 
   const incompleteTasks = filteredTasks.filter((t) => !t.completed);
   const completeTasks = filteredTasks.filter((t) => t.completed);
 
-  // ✅ Progress percentage
-  const progress =
-    todoList.length === 0
-      ? 0
-      : Math.round((completeTasks.length / todoList.length) * 100);
+  const handleDragEnd = (event: any) => {
+    const { active, over } = event;
+    setActiveTask(null);
+    if (!over) return;
+
+    const activeId = active.id;
+    const overId = over.id;
+    const activeTaskObj = tasks.find((t) => t.id === activeId);
+    if (!activeTaskObj) return;
+
+    // Move between incomplete ↔ complete
+    if (
+      incompleteTasks.some((t) => t.id === activeId) &&
+      completeTasks.some((t) => t.id === overId)
+    ) {
+      updateTask({ id: activeId, completed: true });
+      return;
+    }
+
+    if (
+      completeTasks.some((t) => t.id === activeId) &&
+      incompleteTasks.some((t) => t.id === overId)
+    ) {
+      updateTask({ id: activeId, completed: false });
+      return;
+    }
+
+    // Reorder inside same section
+    setTasks((prev) => {
+      const oldIndex = prev.findIndex((t) => t.id === activeId);
+      const newIndex = prev.findIndex((t) => t.id === overId);
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  };
 
   return (
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={darkMode ? darkTheme : lightTheme}>
       <CssBaseline />
-      <Container maxWidth="md" sx={{ py: 4 }}>
-        {/* Header with Theme Toggle */}
-        <Box
-          display="flex"
+      <Box sx={{ p: 4, maxWidth: 950, mx: "auto" }}>
+        {/* Header */}
+        <Stack
+          direction="row"
           justifyContent="space-between"
           alignItems="center"
-          mb={3}
-          sx={(theme) => ({
-            bgcolor: theme.palette.background.paper,
-            p: 2,
-            borderRadius: 2,
-          })}
+          mb={theme.spacing(5)}
         >
-          <Typography variant="h4" fontWeight="bold">
-            ToDo Application
+          <Typography variant="h4" fontWeight="bold" sx={{ letterSpacing: 1 }}>
+            ✨ Smart Todo List
           </Typography>
-          <IconButton
-            onClick={() => setMode(mode === "light" ? "dark" : "light")}
-            color="inherit"
-          >
-            {mode === "light" ? <Brightness4 /> : <Brightness7 />}
-          </IconButton>
-        </Box>
-
-        {/* ✅ Progress Bar */}
-        {todoList.length > 0 && (
-          <Box mb={4}>
-            <Typography gutterBottom>
-              Progress: {progress}% ({completeTasks.length}/{todoList.length})
-            </Typography>
-            <LinearProgress
-              variant="determinate"
-              value={progress}
-              sx={{ height: 10, borderRadius: 5 }}
-            />
-          </Box>
-        )}
-
-        {/* Input Form */}
-        <Paper elevation={3} sx={{ p: 3, mb: 3, borderRadius: 3 }}>
-          <Stack spacing={2}>
-            <TextField
-              label="Task Name"
-              value={task}
-              onChange={(e) => setTask(e.target.value)}
-              fullWidth
-            />
-            <TextField
-              label="Deadline (days)"
-              type="number"
-              value={deadline}
-              onChange={(e) => setDeadline(Number(e.target.value))}
-              fullWidth
-            />
-            <Button
-              variant="contained"
+          <Stack direction="row" spacing={2} alignItems="center">
+            <Chip
+              label={`🕒 ${currentTime.toLocaleTimeString()}`}
               color="primary"
-              onClick={addTask}
-              sx={{ py: 1.5 }}
-            >
-              Add Task
-            </Button>
-          </Stack>
-        </Paper>
-
-        {/* ✅ Search & Filter Controls */}
-        <Paper elevation={2} sx={{ p: 2, mb: 3, borderRadius: 3 }}>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={2}
-            alignItems="center"
-          >
-            <TextField
-              label="Search Task"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              fullWidth
+              variant="outlined"
+              sx={{ fontWeight: "bold", px: 2 }}
             />
-            <Button
-              variant={filter === "all" ? "contained" : "outlined"}
-              onClick={() => setFilter("all")}
+            <IconButton
+              onClick={() => setDarkMode(!darkMode)}
+              sx={{
+                bgcolor: "background.paper",
+                boxShadow: 2,
+                borderRadius: 2,
+                "&:hover": { bgcolor: "primary.light", color: "white" },
+              }}
             >
-              All
-            </Button>
-            <Button
-              variant={filter === "incomplete" ? "contained" : "outlined"}
-              onClick={() => setFilter("incomplete")}
-            >
-              Incomplete
-            </Button>
-            <Button
-              variant={filter === "completed" ? "contained" : "outlined"}
-              onClick={() => setFilter("completed")}
-            >
-              Completed
-            </Button>
+              {darkMode ? <Brightness7 /> : <Brightness4 />}
+            </IconButton>
           </Stack>
+        </Stack>
+
+        {/* Progress */}
+        <Paper
+          sx={{
+            p: 3,
+            mb: theme.spacing(5),
+            borderRadius: 4,
+            boxShadow: 5,
+            bgcolor: "background.default",
+          }}
+        >
+          <Typography variant="subtitle1" mb={2} fontWeight="bold">
+            📊 Progress Overview
+          </Typography>
+          <ProgressBar
+            completed={completeTasks.length}
+            total={filteredTasks.length}
+          />
         </Paper>
 
-        {/* Task Sections */}
+        {/* Add Task + Search + Filter */}
+        <Paper
+          sx={{
+            p: 3,
+            mb: theme.spacing(6),
+            borderRadius: 4,
+            boxShadow: 5,
+            bgcolor: "background.default",
+          }}
+        >
+          <AddTaskForm
+            updateTask={updateTask}
+            onSearchChange={setSearchQuery}
+            onFilterChange={setFilterType}
+          />
+        </Paper>
+
+        {/* Drag & Drop Sections */}
         <DndContext
+          sensors={sensors}
           collisionDetection={closestCenter}
+          onDragStart={(event) => {
+            const task = tasks.find((t) => t.id === event.active.id);
+            setActiveTask(task || null);
+          }}
           onDragEnd={handleDragEnd}
         >
-          <Grid container spacing={3}>
-            {/* Incomplete */}
-            <Grid item xs={12} md={6}>
-              <Paper
-                elevation={3}
-                sx={{ p: 2, borderRadius: 3, height: "100%" }}
+          <Stack spacing={6}>
+            {/* Incomplete Tasks */}
+            <Card
+              sx={{
+                p: 3,
+                borderRadius: 4,
+                boxShadow: 4,
+                bgcolor: "background.paper",
+              }}
+            >
+              <Typography
+                variant="h6"
+                mb={2}
+                sx={{ color: "warning.main", fontWeight: "bold" }}
               >
-                <Typography variant="h6" gutterBottom>
-                  Incomplete Tasks
-                </Typography>
-                <SortableContext
-                  items={incompleteTasks.map((t) => t.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <Stack spacing={2}>
-                    <AnimatePresence>
-                      {incompleteTasks.length === 0 ? (
-                        <Typography color="text.secondary">
-                          No incomplete tasks 🎉
-                        </Typography>
-                      ) : (
-                        incompleteTasks.map((task) => (
-                          <motion.div
-                            key={task.id}
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, x: -50 }}
-                            transition={{ duration: 0.3 }}
-                          >
-                            <TodoTask
-                              task={task}
-                              toggleTaskCompletion={toggleTaskCompletion}
-                              editTask={editTask}
-                              deleteTask={deleteTask}
-                            />
-                          </motion.div>
-                        ))
-                      )}
-                    </AnimatePresence>
-                  </Stack>
-                </SortableContext>
-              </Paper>
-            </Grid>
+                ⏳ Incomplete Tasks
+              </Typography>
+              <Divider sx={{ mb: 2 }} />
+              <SortableContext
+                items={incompleteTasks.map((t) => t.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <Stack spacing={2}>
+                  {incompleteTasks.length > 0 ? (
+                    incompleteTasks.map((task) => (
+                      <TodoTask
+                        key={task.id}
+                        task={task}
+                        updateTask={updateTask}
+                      />
+                    ))
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      🎉 All tasks completed!
+                    </Typography>
+                  )}
+                </Stack>
+              </SortableContext>
+            </Card>
 
-            {/* Complete */}
-            <Grid item xs={12} md={6}>
-              <Paper
-                elevation={3}
-                sx={{ p: 2, borderRadius: 3, height: "100%" }}
+            {/* Completed Tasks */}
+            <Card
+              sx={{
+                p: 3,
+                borderRadius: 4,
+                boxShadow: 4,
+                bgcolor: "background.paper",
+              }}
+            >
+              <Typography
+                variant="h6"
+                mb={2}
+                sx={{ color: "success.main", fontWeight: "bold" }}
               >
-                <Typography variant="h6" gutterBottom>
-                  Complete Tasks
-                </Typography>
-                <SortableContext
-                  items={completeTasks.map((t) => t.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <Stack spacing={2}>
-                    <AnimatePresence>
-                      {completeTasks.length === 0 ? (
-                        <Typography color="text.secondary">
-                          No completed tasks yet
-                        </Typography>
-                      ) : (
-                        completeTasks.map((task) => (
-                          <motion.div
-                            key={task.id}
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, x: 50 }}
-                            transition={{ duration: 0.3 }}
-                          >
-                            <TodoTask
-                              task={task}
-                              toggleTaskCompletion={toggleTaskCompletion}
-                              editTask={editTask}
-                              deleteTask={deleteTask}
-                            />
-                          </motion.div>
-                        ))
-                      )}
-                    </AnimatePresence>
-                  </Stack>
-                </SortableContext>
+                ✅ Completed Tasks
+              </Typography>
+              <Divider sx={{ mb: 2 }} />
+              <SortableContext
+                items={completeTasks.map((t) => t.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <Stack spacing={2}>
+                  {completeTasks.length > 0 ? (
+                    completeTasks.map((task) => (
+                      <TodoTask
+                        key={task.id}
+                        task={task}
+                        updateTask={updateTask}
+                      />
+                    ))
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      No tasks completed yet.
+                    </Typography>
+                  )}
+                </Stack>
+              </SortableContext>
+            </Card>
+          </Stack>
+
+          {/* Drag Overlay Preview */}
+          <DragOverlay>
+            {activeTask ? (
+              <Paper
+                sx={{
+                  p: 2,
+                  bgcolor: "primary.main",
+                  color: "white",
+                  borderRadius: 3,
+                  boxShadow: 6,
+                  fontWeight: "bold",
+                  minWidth: 200,
+                  textAlign: "center",
+                }}
+              >
+                {activeTask.taskName}
               </Paper>
-            </Grid>
-          </Grid>
+            ) : null}
+          </DragOverlay>
         </DndContext>
-      </Container>
+
+        {/* Recycle Bin */}
+        <Box mt={theme.spacing(7)}>
+          <RecycleBin tasks={tasks} updateTask={updateTask} />
+        </Box>
+      </Box>
     </ThemeProvider>
   );
 };
